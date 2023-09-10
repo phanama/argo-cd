@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +32,7 @@ import (
 
 	servercache "github.com/argoproj/argo-cd/v2/server/cache"
 
+	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -867,4 +869,68 @@ func Test_refreshChangedAppOrStoreCachedManifests(t *testing.T) {
 			assert.Equal(t, tc.expectCacheCalled, err == nil)
 		})
 	}
+}
+
+// demo for 10k+ apps refresh
+// with randomized time.sleep in webhook.go's app refresh block
+// (quick shortcut to not hassle creating mock app refresh func + hooking it into the handler)
+func TestGitHubCommitEvent_MultiSource_10kplus_refresh(t *testing.T) {
+	logrus.SetOutput(ioutil.Discard)
+	hook := test.NewGlobal()
+	var patched bool
+	reaction := func(action kubetesting.Action) (handled bool, ret runtime.Object, err error) {
+		patchAction := action.(kubetesting.PatchAction)
+		assert.Contains(t, patchAction.GetName(), "app-to-refresh")
+		patched = true
+		return true, nil, nil
+	}
+	var applications []runtime.Object
+
+	for i := 0; i < 5000; i++ {
+		applications = append(applications, &v1alpha1.Application{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("app-to-refresh-%v", i),
+				Namespace: "argocd",
+			},
+			Spec: v1alpha1.ApplicationSpec{
+				Sources: v1alpha1.ApplicationSources{
+					{
+						RepoURL: "https://github.com/some/unrelated-repo",
+						Path:    ".",
+					},
+					{
+						RepoURL: "https://github.com/jessesuen/test-repo",
+						Path:    ".",
+					},
+				},
+			},
+		})
+	}
+
+	for i := 0; i < 5000; i++ {
+		applications = append(applications, &v1alpha1.Application{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("app-to-ignore-%v", i),
+			},
+			Spec: v1alpha1.ApplicationSpec{
+				Sources: v1alpha1.ApplicationSources{
+					{
+						RepoURL: "https://github.com/some/unrelated-repo",
+						Path:    ".",
+					},
+				},
+			},
+		})
+	}
+	h := NewMockHandler(&reactorDef{"patch", "applications", reaction}, []string{}, applications...)
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook", nil)
+	req.Header.Set("X-GitHub-Event", "push")
+	eventJSON, err := os.ReadFile("testdata/github-commit-event.json")
+	assert.NoError(t, err)
+	req.Body = io.NopCloser(bytes.NewReader(eventJSON))
+	w := httptest.NewRecorder()
+	h.Handler(w, req)
+	assert.Equal(t, w.Code, http.StatusOK)
+	assert.True(t, patched)
+	hook.Reset()
 }

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-playground/webhooks/v6/azuredevops"
 	"github.com/go-playground/webhooks/v6/bitbucket"
@@ -348,6 +349,7 @@ func (a *ArgoCDWebhookHandler) refreshChangedAppOrStoreCachedManifests(app v1alp
 			continue
 		}
 		namespacedAppInterface := a.appClientset.ArgoprojV1alpha1().Applications(app.ObjectMeta.Namespace)
+		time.Sleep(10 * time.Millisecond)
 		if _, err := argo.RefreshApp(namespacedAppInterface, app.ObjectMeta.Name, v1alpha1.RefreshTypeNormal); err != nil {
 			log.Warnf("Failed to refresh app '%s' for controller reprocessing: %v", app.ObjectMeta.Name, err)
 			continue
