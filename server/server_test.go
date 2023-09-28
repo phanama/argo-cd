@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/argoproj/argo-cd/v2/common"
 	"github.com/argoproj/argo-cd/v2/pkg/apiclient"
+	applicationpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
 	"github.com/argoproj/argo-cd/v2/pkg/apiclient/session"
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	apps "github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned/fake"
@@ -1424,4 +1426,50 @@ func TestReplaceBaseHRef(t *testing.T) {
 			assert.Equal(t, testCase.expected, result)
 		})
 	}
+}
+
+func TestGrpcWeb(t *testing.T) {
+
+	s, closer := fakeServer(t)
+	defer closer()
+	lns, err := s.Listen()
+	assert.NoError(t, err)
+
+	cancelInformer := test.StartInformer(s.projInformer)
+	defer cancelInformer()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Init(ctx)
+	go s.Run(ctx, lns)
+	defer func() { time.Sleep(3 * time.Second) }()
+
+	assert.NoError(t, err)
+
+	handler := func(p *httputil.ReverseProxy) func(http.ResponseWriter, *http.Request) {
+		return func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(120 * time.Second)
+			p.ServeHTTP(w, r)
+		}
+	}
+
+	localServer, err := url.Parse(fmt.Sprintf("http://localhost:%d", s.ListenPort))
+	assert.NoError(t, err)
+	fakeProxy := httputil.NewSingleHostReverseProxy(localServer)
+	fakeProxyPort, err := test.GetFreePort()
+	assert.NoError(t, err)
+	http.HandleFunc("/", handler(fakeProxy))
+	go http.ListenAndServe(fmt.Sprintf(":%d", fakeProxyPort), nil)
+	defer func() { time.Sleep(1 * time.Second) }()
+	assert.NoError(t, err)
+
+	opts := apiclient.ClientOptions{
+		ServerAddr: fmt.Sprintf("localhost:%d", fakeProxyPort),
+		PlainText:  true,
+		GRPCWeb:    true,
+	}
+	clnt, err := apiclient.NewClient(&opts)
+	conn, appClnt := clnt.NewApplicationClientOrDie()
+	_, err = appClnt.List(ctx, &applicationpkg.ApplicationQuery{})
+	assert.NoError(t, err)
+	_ = conn.Close()
 }
