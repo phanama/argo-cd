@@ -149,16 +149,6 @@ func loadClusters(ctx context.Context, kubeClient *kubernetes.Clientset, appClie
 	return clusters, nil
 }
 
-func getControllerReplicas(ctx context.Context, kubeClient *kubernetes.Clientset, namespace string, appControllerName string) (int, error) {
-	appControllerPodLabelSelector := common.LabelKeyAppName + "=" + appControllerName
-	controllerPods, err := kubeClient.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{
-		LabelSelector: appControllerPodLabelSelector})
-	if err != nil {
-		return 0, err
-	}
-	return len(controllerPods.Items), nil
-}
-
 func NewClusterShardsCommand(clientOpts *argocdclient.ClientOptions) *cobra.Command {
 	var (
 		shard            int
@@ -181,10 +171,10 @@ func NewClusterShardsCommand(clientOpts *argocdclient.ClientOptions) *cobra.Comm
 			errors.CheckError(err)
 			kubeClient := kubernetes.NewForConfigOrDie(clientCfg)
 			appClient := versioned.NewForConfigOrDie(clientCfg)
-
+			settingsMgr := settings.NewSettingsManager(ctx, kubeClient, namespace)
+			argoDB := db.NewDB(namespace, settingsMgr, kubeClient)
 			if replicas == 0 {
-				replicas, err = getControllerReplicas(ctx, kubeClient, namespace, clientOpts.AppControllerName)
-				errors.CheckError(err)
+				replicas = argoDB.GetApplicationControllerReplicas()
 			}
 			if replicas == 0 {
 				return
@@ -460,9 +450,10 @@ func NewClusterStatsCommand(clientOpts *argocdclient.ClientOptions) *cobra.Comma
 
 			kubeClient := kubernetes.NewForConfigOrDie(clientCfg)
 			appClient := versioned.NewForConfigOrDie(clientCfg)
+			settingsMgr := settings.NewSettingsManager(ctx, kubeClient, namespace)
+			argoDB := db.NewDB(namespace, settingsMgr, kubeClient)
 			if replicas == 0 {
-				replicas, err = getControllerReplicas(ctx, kubeClient, namespace, clientOpts.AppControllerName)
-				errors.CheckError(err)
+				replicas = argoDB.GetApplicationControllerReplicas()
 			}
 			clusters, err := loadClusters(ctx, kubeClient, appClient, replicas, namespace, portForwardRedis, cacheSrc, shard, clientOpts.RedisName, clientOpts.RedisHaProxyName)
 			errors.CheckError(err)
